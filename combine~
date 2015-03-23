@@ -1,0 +1,39 @@
+#!/usr/bin/env python
+
+# A script to combine two decoded files.
+import optparse
+import models
+import sys
+import scorer
+
+optparser = optparse.OptionParser()
+optparser.add_option("-i", "--input", dest="input", default="data/input", help="File containing sentences to translate (default=data/input)")
+optparser.add_option("-t", "--translation-model", dest="tm", default="data/tm", help="File containing translation model (default=data/tm)")
+optparser.add_option("-l", "--language-model", dest="lm", default="data/lm", help="File containing ARPA-format language model (default=data/lm)")
+optparser.add_option("-k", "--translations-per-phrase", dest="k", default=30, type="int", help="Limit on number of translations to consider per phrase (default=1)")
+optparser.add_option("-x", "--decoded file 1", dest="file1", default="output1.txt", help="File containing decoded sentences")
+optparser.add_option("-y", "--decoded file 2", dest="file2", default="output2.txt", help="File containing decoded sentences")
+
+opts = optparser.parse_args()[0]
+
+# the translation model
+tm = models.TM(opts.tm, opts.k)
+sys.stderr.write("TM\n")
+# the language model
+lm = models.LM(opts.lm)
+sys.stderr.write("LM\n")
+file1 = opts.file1
+file2 = opts.file2
+e = scorer.Scorer(opts)
+decodings1 = [tuple(line.strip().split()) for line in open(file1).readlines()]
+decodings2 = [tuple(line.strip().split()) for line in open(file2).readlines()]
+french = [tuple(line.strip().split()) for line in open(opts.input).readlines()]
+for n, (f, (d1, d2)) in enumerate(zip(french, zip(decodings1, decodings2))):
+    score1 = e.grade_score(f, d1)
+    score2 = e.grade_score(f, d2)
+    if score1 > score2:
+        print(" ".join(d1))
+    else:
+        print(" ".join(d2))
+    sys.stderr.write("Combined %d sentences." % n)
+        

@@ -1,0 +1,324 @@
+#!/usr/bin/env python
+
+import optparse
+import sys
+import copy
+import scorer
+import models
+from collections import namedtuple
+      
+        
+optparser = optparse.OptionParser()
+optparser.add_option("-i", "--input", dest="input", default="data/input", help="File containing sentences to translate (default=data/input)")
+optparser.add_option("-t", "--translation-model", dest="tm", default="data/tm", help="File containing translation model (default=data/tm)")
+optparser.add_option("-l", "--language-model", dest="lm", default="data/lm", help="File containing ARPA-format language model (default=data/lm)")
+optparser.add_option("-n", "--num_sentences", dest="num_sents", default=sys.maxint, type="int", help="Number of sentences to decode (default=no limit)")
+optparser.add_option("-k", "--translations-per-phrase", dest="k", default=1, type="int", help="Limit on number of translations to consider per phrase (default=1)")
+optparser.add_option("-s", "--stack-size", dest="s", default=1, type="int", help="Maximum stack size (default=1)")
+optparser.add_option("-v", "--verbose", dest="verbose", action="store_true", default=False,  help="Verbose mode (default=off)")
+opts = optparser.parse_args()[0]
+
+tm = models.TM(opts.tm, opts.k)
+lm = models.LM(opts.lm)
+french = [tuple(line.strip().split()) for line in open(opts.input).readlines()[:opts.num_sents]]              
+                 
+  
+class Decoder:
+  def __init__(self, lm, tm, opts):
+    self.lm = lm
+    self.tm = tm
+    self.opts = opts
+
+
+#this is what you should change.
+#TO IMPLEMENT THE ALGORITHM,
+#FIRST --
+#RUN WITH 
+#seed = self.mono_decode(source)
+#     decoded = self.greedy_decode(source, seed)
+#     return self.print_ps(decoded)
+#WITH THIS COMMAND: python decode > out1.txt
+#SECOND --
+#RUN WITH
+#seed = self.stack_decode(source)
+#     decoded = self.greedy_decode(source, seed)
+#     return self.print_ps(decoded)
+#WITH THIS COMMAND: python decode > out2.txt
+#FINALLY:
+#python combine out1.txt out2.txt > hw2.txt 
+
+  def decode(self, source):
+     seed = self.stack_decode(source)
+     decoded = self.greedy_decode(source, seed)
+     return self.print_ps(decoded)
+
+
+   # The following code implements a monotone decoding
+   # algorithm (one that doesn't permute the target phrases).
+   # Hence all hypotheses in stacks[i] represent translations of 
+   # the first i words of the input sentence. You should generalize
+   # this so that they can represent translations of *any* i words.
+   
+  def mono_decode(self, source):
+    hypothesis = namedtuple("hypothesis", "logprob, lang_m_state, predecessor, phrase, fphrase")
+    initial_hypothesis = hypothesis(0.0, lm.begin(), None, None, None)
+    stacks = [{} for _ in source] + [{}] 
+    stacks[0][self.lm.begin()] = initial_hypothesis  
+    for i, stack in enumerate(stacks[:-1]):  
+      th = max(stack.itervalues(),key=lambda h: h.logprob) 
+      t = th.logprob  
+      threshold = 0.2     
+      pruned = filter(lambda h: -h.logprob >= -threshold*t, stack.itervalues())       # histogram 
+      for h in pruned: # prune
+  
+        for j in xrange(i+1,len(source)+1):
+   
+          if source[i:j] in self.tm:
+    
+            for phrase in self.tm[source[i:j]]:
+              logprob = h.logprob + phrase.logprob
+              lang_m_state = h.lang_m_state
+       
+              for word in phrase.english.split():
+                (lang_m_state, word_logprob) = self.lm.score(lang_m_state, word)
+                logprob += word_logprob
+                logprob += self.lm.end(lang_m_state) if j == len(source) else 0.0
+                new_hypothesis = hypothesis(logprob, lang_m_state, h, phrase, source[i:j])
+  
+                if lang_m_state not in stacks[j] or stacks[j][lang_m_state].logprob < logprob: # second case is recombination
+                  stacks[j][lang_m_state] = new_hypothesis 
+    winner = max(stacks[-1].itervalues(), key=lambda h: h.logprob)
+    return self.hyp_to_phrases(winner)
+      
+  
+ #converts the hypothesis to phrases (List)
+ # takes in the hypothese, outputs 
+
+  def hyp_to_phrases(self,hyp):
+    phrases = []
+    def get_phrases(hyp, p):
+      if hyp == None:
+        return
+      else:
+        p.insert(0, (hyp.phrase, hyp.fphrase))
+        get_phrases(hyp.predecessor, p)
+    get_phrases(hyp, phrases)
+    return phrases
+
+  def greedy_decode(self, source, seed):
+    iters = 100
+    current = seed
+    for i in xrange(iters):
+      s_current = self.score(current, source)
+      s = s_current
+      for h in self.neighborhood(current):
+        c = self.score(h, source)
+        if c > s:
+          s = c
+          best = h
+          if s == s_current:
+            return current
+          else:
+            current = best
+      return current
+ 
+  def score(self, p, source):
+  
+      lm_prob = 0.0
+      lang_m_state = self.lm.begin()
+      num_f_translated = 0
+      for n, (ep, fp) in enumerate(p):
+        if ep != None and fp != None:
+          num_f_translated += len(fp)
+          for word in ep.english.split():
+            (lang_m_state, word_logprob) = self.lm.score(lang_m_state, word)
+            lm_prob += word_logprob
+          lm_prob += self.lm.end(lang_m_state) if num_f_translated == len(source) else 0.0
+        
+  
+        tm_prob = 0.0
+        for (ep, fp) in p:
+          if ep != None:
+            tm_prob += ep.logprob
+        return (lm_prob + tm_prob) 
+  
+      def score_with_grader(self, f, e, alignments, ev):
+        score = ev.grade_with_alignments(f, e, alignments)
+        return score
+ 
+  def neighborhood(self, p):
+     return self.swap(p) + self.merge(p) + self.replace(p) + self.split(p)
+      
+  def swap(self, p):
+        s = []
+        for i in xrange(len(p)-1):
+          for j in xrange(i, len(p)):
+            swapps = copy.deepcopy(p)
+            temp = swapps[i]
+            swapps[i] = swapps[j]
+            swapps[j] = temp
+            s.append(swapps)
+        return s
+               
+      # input: phrase list Out: new phrase list, with single phrases replaced by its alt defs  
+  def replace(self, p): 
+        replaces = [] 
+        for n, p in enumerate(p): 
+          if p[1] in self.tm: 
+            ts = self.tm[p[1]] 
+            for t in ts:   
+              if p[0] != t:  
+                replaced = copy.deepcopy(p)   
+                replaced[n] = (t, p[1])  
+                replaces.append(replaced) 
+        return replaces
+                       
+
+  def merge(self, p):
+        merges = []
+        for i in xrange(1, len(p)-1):
+          f1 = p[i][1]
+          f2 = p[i+1][1]
+          if f1 and f2 and (f1 + f2) in self.tm:
+            for t in self.tm[f1+f2]:
+              merged = copy.deepcopy(p)
+              merged.remove(p[i+1])
+              merged[i] = (t, f1+f2)
+              merges.append(merged)
+          if len(p) >= 3:
+            for i in xrange(1, len(p)-2):
+              f1 = p[i][1]
+              f2 = p[i+1][1]
+              f3 = p[i+2][1]
+              if f1 and f2 and f3 and (f1 + f2 + f3) in self.tm:
+                for t in self.tm[f1+f2+f3]:
+                  merged = copy.deepcopy(p)
+                  merged.remove(p[i+1])
+                  merged.remove(p[i+2])
+                  merged[i] = (t, f1+f2+f3)
+                  merges.append(merged)
+        return merges
+             
+
+  def split(self, p):
+          splits = []
+          for n, i in enumerate(p):
+            french_phrase = p[n][1]
+            if french_phrase != None:
+              if len(french_phrase) > 1:
+                for j in xrange(1, len(french_phrase)):
+                  s1 = french_phrase[0:j]
+                  s2 = french_phrase[j:]
+                  if s1 in self.tm and s2 in self.tm:
+                    for ts1 in self.tm[s1]:
+                      for ts2 in self.tm[s2]:
+                        spl = copy.deepcopy(p)
+                        spl[n] = (ts1, s1)
+                        spl.insert(n+1, (ts2, s2))
+                        splits.append(spl)
+          return splits
+ 
+
+  def print_ps(self, phrases):
+          s = ""
+          for p in phrases:
+            if p[0] != None:
+              s += p[0].english + " "
+          return s
+        
+           
+  #Decode 
+  def stack_decode(self, source):
+    hypo = namedtuple("hypo", "logprob, lang_m_state, predecessor, phrase, marked, end_i, fphrase")
+    
+    marked = [0 for _ in source] 
+    initial_hypothesis = hypo(0.0, self.lm.begin(), None, None, marked, 0, None)
+    stacks = [{} for _ in source] + [{}]
+    stacks[0][self.lm.begin()] = initial_hypothesis
+    for i, stack in enumerate(stacks[:-1]):
+      if len(stack) > self.opts.s:
+        th = max(stack.itervalues(),key=lambda h: h.logprob)
+        t = th.logprob
+        threshold = 1.3
+        pruned = sorted(filter(lambda h: h.logprob >= threshold*t, stack.itervalues()), key=lambda h: -h.logprob)[:500]
+        sys.stderr.write("%d" % len(pruned))
+      else:
+        pruned = stack.itervalues()
+      for hyp in pruned: # prune
+        options = self.get_t_options(hyp, source)
+      # for each translation option
+        for (phrase, idxs) in options:
+          start_ind = idxs[0]
+          end_ind = idxs[1]
+      # add the log probability from the translation model
+          logprob = hyp.logprob + phrase.logprob
+          lang_m_state = hyp.lang_m_state
+
+      # evaluate the english phrase using the language model
+          for word in phrase.english.split():
+            (lang_m_state, word_logprob) = self.lm.score(lang_m_state, word)
+            logprob += word_logprob
+            logprob += self.lm.end(lang_m_state) if end_ind == len(source)-1 else 0.0
+          marked = copy.deepcopy(hyp.marked)
+          # mark the word sequence that we're translating to denote
+          # that the words have been translated in this hypothesis
+          for x in xrange(start_ind, end_ind):
+            marked[x] = 1
+          num_marked = len(filter(lambda x: x == 1, marked))
+          tmark = tuple(marked)
+          # create a new hypothesis
+          new_hypothesis = hypo(logprob, lang_m_state, hyp, phrase, marked, end_ind, source[start_ind:end_ind])
+          if tmark not in stacks[num_marked] or stacks[num_marked][tmark].logprob < logprob: # second case is recombination
+            stacks[num_marked][tmark] = new_hypothesis
+    winner = max(stacks[-1].itervalues(), key=lambda h: h.logprob)
+    return self.hyp_to_phrases(winner)
+
+  def get_t_options(self, h, f):
+          options = []
+          for fi in xrange(len(f)):
+            for fj in xrange(fi+1, len(f)+1):
+              # check if the range is unmarked
+              unmarked = all(lambda x: h.marked[x]==0 for m in range(fi, fj))
+              if unmarked:
+                if f[fi:fj] in self.tm:
+                  phrases = self.tm[f[fi:fj]]
+                  for p in phrases:
+                    options.append((p, (fi, fj)))
+          return options
+           
+
+#actually run the decoder!! Yay
+def decode(source, lm, tm, opts):
+   d = Decoder(lm, tm, opts)
+   return d.decode(source)
+
+for word in set(sum(french,())):
+  if (word,) not in tm:
+    tm[(word,)] = [models.phrase(word, 0.0)]
+
+sys.stderr.write("Decoding %s...\n" % (opts.input,))
+
+for n, f in enumerate(french):
+   sentence = decode(f, lm, tm, opts)
+   sys.stderr.write("\n" + sentence + "\n")
+   print sentence
+   sys.stderr.write("Finished Decoding %d of %d ...\n" % (n+1, len(french)))
+                 
+
+
+        # Combines two files containing decodings by choosing, for each sentence,
+        # the higher scoring decoding. Writes to a file.
+        # Input:dfile1 - a file with sentence decodings
+        # dfile2 - a file with sentence decodings
+        # Output:prints out combined decodings.
+                 #  def extract_english(h): 
+                 #    return "" if h.predecessor is None else "%s%s " % (extract_english(h.predecessor), h.phrase.english)
+                 #  print extract_english(winner)
+                 #
+                 #  if opts.verbose:
+                 #    def extract_tm_logprob(h):
+                 #      return 0.0 if h.predecessor is None else h.phrase.logprob + extract_tm_logprob(h.predecessor)
+                 #    tm_logprob = extract_tm_logprob(winner)
+                 #    sys.stderr.write("LM = %f, TM = %f, Total = %f\n" % 
+                 #      (winner.logprob - tm_logprob, tm_logprob, winner.logprob))
+
